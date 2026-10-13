@@ -1,0 +1,11 @@
+[project]
+name = "greythr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "playwright>=1.57.0",
+    "pyinstaller>=6.18.0",
+    "win11toast>=0.36.3",
+]
