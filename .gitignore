@@ -11,3 +11,4 @@ wheels/
 screenshots
 logs
 .env
+*.spec

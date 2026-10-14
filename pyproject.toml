@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dotenv>=0.9.9",
     "playwright>=1.57.0",
     "pyinstaller>=6.18.0",
     "win11toast>=0.36.3",
