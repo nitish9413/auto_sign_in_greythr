@@ -139,10 +139,12 @@ def setup_logging(cfg: Config) -> None:
         cfg.log_file, maxBytes=1_000_000, backupCount=5, encoding="utf-8"
     )
     file_handler.setFormatter(fmt)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
     root.addHandler(file_handler)
-    root.addHandler(stream_handler)
+    # A windowed (--noconsole) exe has no stderr, so only log to the console when one exists.
+    if sys.stderr is not None:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(fmt)
+        root.addHandler(stream_handler)
 
 
 # ---------------- SCREENSHOTS ----------------
@@ -277,8 +279,9 @@ class Notifier:
 SEL_USER = "input[type='text'], input[type='email']"
 SEL_PASS = "input[type='password']"
 SEL_LOGIN_BTN = "button:has-text('Login'), button:has-text('Sign In')"
-SEL_SIGN_IN = "button:has-text('Sign In')"
-SEL_SIGN_OUT = "button:has-text('Sign Out')"
+# GreytHR renders BOTH buttons and disables the inactive one, so only match enabled ones.
+SEL_SIGN_IN = "button:has-text('Sign In'):not([disabled])"
+SEL_SIGN_OUT = "button:has-text('Sign Out'):not([disabled])"
 
 
 class Result(Enum):
@@ -312,10 +315,12 @@ def punch(page: Page, cfg: Config, shots: Screenshots, dry_run: bool) -> Result:
     sign_in = page.locator(SEL_SIGN_IN).first
     sign_out = page.locator(SEL_SIGN_OUT).first
 
-    try:  # wait for whichever button shows up first
-        sign_in.or_(sign_out).wait_for(state="visible", timeout=cfg.nav_timeout_ms)
+    try:  # wait until either button is enabled (comma selector + .first = no strict-mode error)
+        page.locator(f"{SEL_SIGN_IN}, {SEL_SIGN_OUT}").first.wait_for(
+            state="visible", timeout=cfg.nav_timeout_ms
+        )
     except PWTimeoutError:
-        raise PunchError("no_button", "Neither Sign In nor Sign Out is visible")
+        raise PunchError("no_button", "Neither Sign In nor Sign Out is enabled")
 
     if sign_out.is_visible():
         log.info("Already punched in (Sign Out visible)")
@@ -385,16 +390,21 @@ def run(cfg: Config, dry_run: bool) -> bool:
                     return True
                 if result in (Result.PUNCHED, Result.ALREADY_IN):
                     log.info("Punch-in OK on attempt %d (%s)", attempt, result.value)
+                    # One title + message, shared by the toast and the Teams card
                     if result is Result.PUNCHED:
-                        msg = f"Punched in successfully (attempt {attempt}/{cfg.max_attempts})"
                         title = "GreytHR Punch-In Successful"
-                        detail = "Automated punch-in completed successfully."
+                        message = (
+                            f"Punched in successfully "
+                            f"(attempt {attempt}/{cfg.max_attempts})."
+                        )
                     else:
-                        msg = "Already punched in today."
-                        title = "GreytHR Already Punched In"
-                        detail = "Sign Out was already visible; nothing to do."
-                    notifier.toast("GreytHR punch-in", msg)
-                    notifier.teams("success", title, detail, attempt)
+                        title = "GreytHR: Already Signed In"
+                        message = (
+                            "You are already signed in today. "
+                            "No action was needed."
+                        )
+                    notifier.toast(title, message)
+                    notifier.teams("success", title, message, attempt)
                     return True
 
                 if attempt < cfg.max_attempts:
