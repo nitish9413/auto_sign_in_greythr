@@ -40,8 +40,9 @@ From source:
 ```bash
 uv run python punch_in.py              # normal run
 uv run python punch_in.py --dry-run    # log in and check state, don't click
-uv run python punch_in.py --force      # run even on weekends
+uv run python punch_in.py --force      # run even on weekends / if already done today
 uv run python punch_in.py --no-delay   # skip the startup delay
+uv run python punch_in.py --watchdog   # alert if no success recorded today
 ```
 
 From the exe:
@@ -76,7 +77,29 @@ copy .env dist\.env
 - Start in: the `dist` folder
 - Trigger: weekdays, at log-on
 
-`STARTUP_DELAY_SECONDS` in `.env` gives the network time to come up after boot.
+The script waits for GreytHR to be reachable (see Resilience below), so no long fixed delay is needed.
+
+## Resilience
+
+**Network wait.** After a short settle delay, the script polls GreytHR until it accepts a connection (up to `NETWORK_WAIT_MAX_SECONDS`), instead of sleeping a fixed time. If the network never comes up it still tries, and the follow-up retries below take over.
+
+**Follow-up retries.** If all `MAX_ATTEMPTS` fail, it waits `FOLLOWUP_INTERVAL_MINUTES` and runs another full round, up to `FOLLOWUP_RETRIES` times. Each failed round sends an orange "Retrying" card to Teams. The red failure alert and toast only fire after every round has failed. The process stays alive (hidden) while it waits.
+
+**Once per day.** After a success (or "already signed in"), the result is saved in `state.json`. Later launches the same day exit immediately. `--force` overrides that.
+
+**Session reuse.** After a successful login the browser session is saved to `session.json`. Next run it opens the dashboard directly. If the session has expired, or the file is unreadable, it logs in normally. Set `SESSION_REUSE=false` to turn this off. `session.json` holds login cookies, so protect it like a password.
+
+**Watchdog.** `punch_in.exe --watchdog` reads `state.json` and, if there is no success recorded today after `WATCHDOG_DEADLINE`, sends a toast and a Teams alert (once per day). It also catches runs that never happened (laptop off, startup task not firing). Skips weekends. Register it as a scheduled task (PowerShell, from the repo folder):
+
+```powershell
+$exe      = (Resolve-Path .\dist\punch_in.exe).Path
+$action   = New-ScheduledTaskAction -Execute $exe -Argument "--watchdog" -WorkingDirectory (Split-Path $exe)
+$trigger  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At 10:30
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "GreytHR Watchdog" -Action $action -Trigger $trigger -Settings $settings -Force
+```
+
+Keep the trigger time at or after `WATCHDOG_DEADLINE`. `-StartWhenAvailable` runs it when the laptop wakes after a missed time. If the laptop is completely off at 10:30, nothing can run on it, so the alert comes late or not at all.
 
 ## Configuration (`.env`)
 
@@ -89,7 +112,12 @@ copy .env dist\.env
 | `TEAMS_WEBHOOK_URL` | no | blank = no Teams alerts | Power Automate Workflows / webhook URL |
 | `CHROMIUM_PATH` | no | blank = Playwright's Chromium | Only set to use a specific browser |
 | `HEADLESS` | no | `true` | |
-| `STARTUP_DELAY_SECONDS` | no | `60` | Wait for network after boot |
+| `STARTUP_DELAY_SECONDS` | no | `10` | Short settle time after boot |
+| `NETWORK_WAIT_MAX_SECONDS` | no | `300` | Wait until GreytHR is reachable (`0` = don't wait) |
+| `FOLLOWUP_RETRIES` | no | `3` | Extra rounds after a fully failed round (`0` = off) |
+| `FOLLOWUP_INTERVAL_MINUTES` | no | `15` | Gap between follow-up rounds |
+| `WATCHDOG_DEADLINE` | no | `10:30` | `--watchdog` alerts if no success by this time |
+| `SESSION_REUSE` | no | `true` | Reuse the saved login session |
 | `MAX_ATTEMPTS` | no | `3` | |
 | `RETRY_BACKOFF_SECONDS` | no | `20` | |
 | `NAV_TIMEOUT_MS` / `ELEMENT_TIMEOUT_MS` | no | `45000` / `15000` | |
@@ -109,6 +137,8 @@ copy .env dist\.env
 - **Logs:** `logs\punch.log` (next to the exe, rotates automatically). Because the exe has no console, this is the first place to look.
 - **Screenshots:** `screenshots\<date>\`, saved on success and on every failure (`login_failed`, `no_button`, `punch_unconfirmed`, `timeout`, `error`).
 - **Nothing happens at startup:** check `punch.log` for new lines. No lines usually means `.env` isn't next to the exe, or the exe crashed. Run it from a terminal with `--dry-run --force --no-delay`.
+- **Nothing runs, log says "Already succeeded today":** `state.json` has today's success. Use `--force`, or delete `state.json`.
+- **Login keeps being skipped but punch fails:** delete `session.json` to force a fresh login.
 - **`Config problem: ...`:** fix `dist\.env` and run again.
 - **Terminal window shows at startup:** the exe was built without `--noconsole`. Rebuild with the command above.
 - **Already signed in but it errors:** GreytHR renders both Sign In and Sign Out buttons and disables the inactive one. The script only looks at the enabled one (`SEL_SIGN_IN` / `SEL_SIGN_OUT` in `punch_in.py`). If GreytHR changes its UI, edit those selectors.
